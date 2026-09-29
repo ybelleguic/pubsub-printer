@@ -3,10 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
-	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -71,7 +67,7 @@ func TestRunPrintsAndAcks(t *testing.T) {
 	if decoded["project"] != "demo-project" || decoded["subscription"] != "projects/demo-project/subscriptions/events" {
 		t.Fatalf("decoded = %#v", decoded)
 	}
-	if decoded["endpoint"] != srv.Addr {
+	if decoded["endpoint"] != gcp.EffectiveEndpoint(cfg) {
 		t.Fatalf("endpoint = %#v", decoded["endpoint"])
 	}
 	data, ok := decoded["data"].(map[string]any)
@@ -92,67 +88,6 @@ func TestRunPrintsAndAcks(t *testing.T) {
 	if !acked {
 		t.Fatal("message was not acked")
 	}
-
-	// ClientOptions must describe the same emulator target the test used.
-	plan, err := gcp.BuildPlan(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !plan.Emulator || plan.Endpoint != srv.Addr {
-		t.Fatalf("plan = %+v", plan)
-	}
-}
-
-func TestRunStopsCleanlyWithHealthServer(t *testing.T) {
-	cfg, _, _ := newEmulator(t)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-	cfg.HealthAddr = addr
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	errCh := make(chan error, 1)
-	logger := slog.New(slog.DiscardHandler)
-	go func() {
-		errCh <- run(ctx, cfg, io.Discard, logger)
-	}()
-
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		res, err := http.Get("http://" + addr + "/readyz")
-		if err == nil {
-			res.Body.Close()
-			if res.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("subscriber did not become ready")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("run did not return after cancel")
-	}
-
-	res, err := http.Get("http://" + addr + "/healthz")
-	if err == nil {
-		res.Body.Close()
-		t.Fatal("health server still accepting connections")
-	}
 }
 
 func newEmulator(t *testing.T) (config.Config, *pstest.Server, *pubsub.Client) {
@@ -163,14 +98,13 @@ func newEmulator(t *testing.T) (config.Config, *pstest.Server, *pubsub.Client) {
 	cfg := config.Config{
 		ProjectID:              "demo-project",
 		Subscription:           "events",
-		EmulatorHost:           srv.Addr,
 		Format:                 "json",
 		Ack:                    true,
-		Color:                  "never",
 		MaxOutstandingMessages: 10,
 		MaxOutstandingBytes:    1 << 20,
-		NumGoroutines:          1,
 	}
+	// The Pub/Sub client library dials this host itself. It is not an
+	// application setting.
 	t.Setenv("PUBSUB_EMULATOR_HOST", srv.Addr)
 
 	opts := []option.ClientOption{

@@ -1,0 +1,29 @@
+# Cloud Run worker pool that pulls a subscription.
+#
+# A worker pool does not expect HTTP traffic, which matches a StreamingPull
+# loop. The runtime service account is the workload identity: leave
+# GOOGLE_APPLICATION_CREDENTIALS unset.
+apiVersion: run.googleapis.com/v1
+kind: WorkerPool
+metadata:
+  name: pubsub-printer
+  annotations:
+    run.googleapis.com/launch-stage: BETA
+    run.googleapis.com/manualInstanceCount: "1"
+spec:
+  template:
+    spec:
+      serviceAccountName: pubsub-printer@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/REPO/pubsub-printer:latest
+          env:
+            - name: PROJECT_ID
+              value: s3ns:my-project
+            - name: PUBSUB_SUBSCRIPTION
+              value: events
+            - name: GOOGLE_CLOUD_UNIVERSE_DOMAIN
+              value: s3nsapis.fr
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi

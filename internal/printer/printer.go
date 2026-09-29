@@ -35,21 +35,19 @@ type Record struct {
 type Printer struct {
 	out     io.Writer
 	format  string
-	color   bool
 	maxBody int
 	mu      sync.Mutex
 }
 
-// New builds a printer. format is "pretty" or "json". colorMode is auto, always, or never.
+// New builds a printer. format is "pretty" or "json".
 // maxBody is the maximum payload bytes rendered; 0 means no truncation.
-func New(out io.Writer, format, colorMode string, maxBody int) *Printer {
+func New(out io.Writer, format string, maxBody int) *Printer {
 	if out == nil {
 		out = os.Stdout
 	}
 	return &Printer{
 		out:     out,
 		format:  format,
-		color:   useColor(colorMode, out),
 		maxBody: maxBody,
 	}
 }
@@ -77,7 +75,7 @@ func (p *Printer) writePretty(buf *bytes.Buffer, rec Record) error {
 	if id == "" {
 		id = "-"
 	}
-	fmt.Fprintf(buf, "%s %s\n", p.paint(ansiCyan, "┌─"), p.paint(ansiBold, id))
+	fmt.Fprintf(buf, "┌─ %s\n", id)
 	p.field(buf, "project", dash(rec.Project))
 	p.field(buf, "subscription", dash(rec.Subscription))
 	p.field(buf, "universe", dash(rec.Universe))
@@ -94,7 +92,7 @@ func (p *Printer) writePretty(buf *bytes.Buffer, rec Record) error {
 		label = fmt.Sprintf("%d B · %s · truncated to %d B", len(rec.Data), kind, bodyLimit(rec.Data, p.maxBody))
 	}
 	p.field(buf, "payload", label)
-	fmt.Fprintf(buf, "%s\n", p.paint(ansiCyan, "└─"))
+	fmt.Fprintf(buf, "└─\n")
 	if body != "" {
 		buf.WriteString(body)
 		if !strings.HasSuffix(body, "\n") {
@@ -106,7 +104,7 @@ func (p *Printer) writePretty(buf *bytes.Buffer, rec Record) error {
 }
 
 func (p *Printer) field(buf *bytes.Buffer, key, value string) {
-	fmt.Fprintf(buf, "%s %-14s %s\n", p.paint(ansiCyan, "│"), p.paint(ansiDim, key), value)
+	fmt.Fprintf(buf, "│ %-14s %s\n", key, value)
 }
 
 func (p *Printer) writeAttributes(buf *bytes.Buffer, attrs map[string]string) {
@@ -114,7 +112,7 @@ func (p *Printer) writeAttributes(buf *bytes.Buffer, attrs map[string]string) {
 		p.field(buf, "attributes", "-")
 		return
 	}
-	fmt.Fprintf(buf, "%s %s\n", p.paint(ansiCyan, "│"), p.paint(ansiDim, "attributes"))
+	fmt.Fprintf(buf, "│ attributes\n")
 	keys := make([]string, 0, len(attrs))
 	for k := range attrs {
 		keys = append(keys, k)
@@ -122,7 +120,7 @@ func (p *Printer) writeAttributes(buf *bytes.Buffer, attrs map[string]string) {
 	slices.Sort(keys)
 	for _, k := range keys {
 		value := strings.ReplaceAll(attrs[k], "\n", `\n`)
-		fmt.Fprintf(buf, "%s   %-14s %s\n", p.paint(ansiCyan, "│"), k, value)
+		fmt.Fprintf(buf, "│   %-14s %s\n", k, value)
 	}
 }
 
@@ -229,44 +227,4 @@ func dash(v string) string {
 		return "-"
 	}
 	return v
-}
-
-func useColor(mode string, w io.Writer) bool {
-	switch strings.ToLower(mode) {
-	case "always":
-		return true
-	case "never":
-		return false
-	default:
-		if _, ok := os.LookupEnv("NO_COLOR"); ok {
-			return false
-		}
-		return isTerminal(w)
-	}
-}
-
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return st.Mode()&os.ModeCharDevice != 0
-}
-
-const (
-	ansiReset = "\x1b[0m"
-	ansiDim   = "\x1b[2m"
-	ansiBold  = "\x1b[1m"
-	ansiCyan  = "\x1b[36m"
-)
-
-func (p *Printer) paint(code, text string) string {
-	if !p.color {
-		return text
-	}
-	return code + text + ansiReset
 }

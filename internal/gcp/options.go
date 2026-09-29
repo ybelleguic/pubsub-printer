@@ -8,8 +8,6 @@ import (
 	"github.com/ybelleguic/pubsub-printer/internal/config"
 	"github.com/ybelleguic/pubsub-printer/internal/version"
 	"google.golang.org/api/option"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const defaultUniverse = "googleapis.com"
@@ -20,8 +18,6 @@ type Plan struct {
 	UniverseDomain  string
 	Endpoint        string
 	CredentialsFile string
-	QuotaProject    string
-	Emulator        bool
 }
 
 // BuildPlan decides how the Pub/Sub client authenticates and which API host it uses.
@@ -30,45 +26,29 @@ type Plan struct {
 // libraries then use Application Default Credentials and the metadata server.
 // For a non-default universe, UniverseDomain must match the credentials
 // (GOOGLE_CLOUD_UNIVERSE_DOMAIN, for example s3nsapis.fr).
-func BuildPlan(cfg config.Config) (Plan, error) {
-	if cfg.EmulatorHost != "" {
-		return Plan{Emulator: true, Endpoint: cfg.EmulatorHost}, nil
-	}
-	endpoint, err := ResolveEndpoint(cfg.UniverseDomain, cfg.Endpoint)
-	if err != nil {
-		return Plan{}, err
-	}
+func BuildPlan(cfg config.Config) Plan {
 	return Plan{
 		UniverseDomain:  cfg.UniverseDomain,
-		Endpoint:        endpoint,
+		Endpoint:        ResolveEndpoint(cfg.UniverseDomain),
 		CredentialsFile: cfg.CredentialsFile,
-		QuotaProject:    cfg.QuotaProject,
-	}, nil
+	}
 }
 
 // ResolveEndpoint returns the Pub/Sub gRPC target.
-// An explicit endpoint wins. Otherwise a non-default universe uses
-// pubsub.<universe>:443, which is how s3nsapis.fr exposes pubsub.googleapis.com.
-// The default universe keeps an empty endpoint so the client library can apply
-// its own endpoint template.
-func ResolveEndpoint(universe, explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
+// A non-default universe uses pubsub.<universe>:443, which is how s3nsapis.fr
+// exposes pubsub.googleapis.com. The default universe keeps an empty endpoint
+// so the client library can apply its own endpoint template.
+func ResolveEndpoint(universe string) string {
 	if universe == "" || universe == defaultUniverse {
-		return "", nil
+		return ""
 	}
-	return "pubsub." + universe + ":443", nil
+	return "pubsub." + universe + ":443"
 }
 
 // EffectiveEndpoint is the host shown in logs and message metadata.
 func EffectiveEndpoint(cfg config.Config) string {
-	plan, err := BuildPlan(cfg)
-	if err != nil {
-		return ""
-	}
-	if plan.Endpoint != "" {
-		return plan.Endpoint
+	if endpoint := ResolveEndpoint(cfg.UniverseDomain); endpoint != "" {
+		return endpoint
 	}
 	universe := cfg.UniverseDomain
 	if universe == "" {
@@ -79,9 +59,6 @@ func EffectiveEndpoint(cfg config.Config) string {
 
 // EffectiveUniverse returns the universe domain used for display.
 func EffectiveUniverse(cfg config.Config) string {
-	if cfg.EmulatorHost != "" {
-		return ""
-	}
 	if cfg.UniverseDomain == "" {
 		return defaultUniverse
 	}
@@ -90,32 +67,15 @@ func EffectiveUniverse(cfg config.Config) string {
 
 // AuthMode describes which credentials the process will use.
 func AuthMode(cfg config.Config) string {
-	switch {
-	case cfg.EmulatorHost != "":
-		return "emulator"
-	case cfg.CredentialsFile != "":
+	if cfg.CredentialsFile != "" {
 		return "credentials-file"
-	default:
-		return "adc"
 	}
+	return "adc"
 }
 
 // ClientOptions converts a plan into Google API client options.
-func ClientOptions(cfg config.Config) ([]option.ClientOption, error) {
-	plan, err := BuildPlan(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if plan.Emulator {
-		return []option.ClientOption{
-			option.WithEndpoint(plan.Endpoint),
-			option.WithoutAuthentication(),
-			option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
-			option.WithTelemetryDisabled(),
-			option.WithUserAgent("pubsub-printer/" + version.Version),
-		}, nil
-	}
-
+func ClientOptions(cfg config.Config) []option.ClientOption {
+	plan := BuildPlan(cfg)
 	opts := []option.ClientOption{
 		option.WithUserAgent("pubsub-printer/" + version.Version),
 	}
@@ -128,10 +88,7 @@ func ClientOptions(cfg config.Config) ([]option.ClientOption, error) {
 	if plan.CredentialsFile != "" {
 		opts = append(opts, option.WithCredentialsFile(plan.CredentialsFile))
 	}
-	if plan.QuotaProject != "" {
-		opts = append(opts, option.WithQuotaProject(plan.QuotaProject))
-	}
-	return opts, nil
+	return opts
 }
 
 // UniverseHint wraps a client constructor error that is caused by a universe mismatch.

@@ -60,27 +60,6 @@ spec:
             # exports it before the client is created so auth and the API host agree.
             - name: GOOGLE_CLOUD_UNIVERSE_DOMAIN
               value: s3nsapis.fr
-            - name: HEALTH_ADDR
-              value: ":8080"
-          ports:
-            - name: http
-              containerPort: 8080
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: http
-            periodSeconds: 5
-          startupProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 5
-            failureThreshold: 12
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 20
           resources:
             requests:
               cpu: 50m
