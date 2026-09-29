@@ -23,8 +23,9 @@ func TestLoadEnvOverridesFile(t *testing.T) {
 
 	cfg, err := Load(nil, []string{
 		"PUBSUB_CONFIG=" + path,
-		"PUBSUB_PROJECT_ID=s3ns:from-env",
+		"PROJECT_ID=s3ns:from-env",
 		"GOOGLE_CLOUD_UNIVERSE_DOMAIN=s3nsapis.fr",
+		"GOOGLE_APPLICATION_CREDENTIALS=/tmp/adc.json",
 		"PUBSUB_ACK=false",
 		"PUBSUB_FORMAT=json",
 	})
@@ -36,6 +37,9 @@ func TestLoadEnvOverridesFile(t *testing.T) {
 	}
 	if cfg.UniverseDomain != "s3nsapis.fr" {
 		t.Fatalf("universe = %q", cfg.UniverseDomain)
+	}
+	if cfg.CredentialsFile != "/tmp/adc.json" {
+		t.Fatalf("credentials = %q", cfg.CredentialsFile)
 	}
 	if cfg.Ack {
 		t.Fatal("expected ack to be disabled by the environment")
@@ -55,18 +59,27 @@ func TestLoadEnvOverridesFile(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresRetiredEnvNames(t *testing.T) {
+	_, err := Load(nil, []string{
+		"PUBSUB_PROJECT_ID=demo-project",
+		"GOOGLE_CLOUD_PROJECT=demo-project",
+		"PUBSUB_SUBSCRIPTION=events",
+		"PUBSUB_UNIVERSE_DOMAIN=s3nsapis.fr",
+	})
+	if err == nil || !strings.Contains(err.Error(), "project_id is required") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestLoadFlagOverridesEnv(t *testing.T) {
 	cfg, err := Load([]string{
 		"--project=s3ns:from-flag",
 		"--subscription=projects/s3ns:from-flag/subscriptions/events",
 		"--universe-domain=s3nsapis.fr",
-		"--endpoint=https://pubsub.s3nsapis.fr",
 		"--ack=true",
-		"--health-addr=-",
 	}, []string{
-		"PUBSUB_PROJECT_ID=from-env",
+		"PROJECT_ID=from-env",
 		"PUBSUB_SUBSCRIPTION=other",
-		"PORT=8080",
 		"GOOGLE_CLOUD_UNIVERSE_DOMAIN=googleapis.com",
 	})
 	if err != nil {
@@ -78,21 +91,15 @@ func TestLoadFlagOverridesEnv(t *testing.T) {
 	if cfg.UniverseDomain != "s3nsapis.fr" {
 		t.Fatalf("universe = %q", cfg.UniverseDomain)
 	}
-	if cfg.Endpoint != "pubsub.s3nsapis.fr:443" {
-		t.Fatalf("endpoint = %q", cfg.Endpoint)
-	}
-	if cfg.HealthAddr != "" {
-		t.Fatalf("health addr = %q, want disabled despite PORT", cfg.HealthAddr)
+	if cfg.Subscription != "projects/s3ns:from-flag/subscriptions/events" {
+		t.Fatalf("subscription = %q", cfg.Subscription)
 	}
 }
 
-func TestLoadPortEnablesHealth(t *testing.T) {
-	cfg, err := Load([]string{"--project=demo-project", "--subscription=events"}, []string{"PORT=8080"})
+func TestLoadDefaults(t *testing.T) {
+	cfg, err := Load([]string{"--project=demo-project", "--subscription=events"}, nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if cfg.HealthAddr != ":8080" {
-		t.Fatalf("health = %q", cfg.HealthAddr)
 	}
 	if !cfg.Ack {
 		t.Fatal("ack should default to true")
@@ -102,6 +109,9 @@ func TestLoadPortEnablesHealth(t *testing.T) {
 	}
 	if cfg.MaxOutstandingMessages != DefaultMaxOutstandingMessages {
 		t.Fatalf("messages = %d", cfg.MaxOutstandingMessages)
+	}
+	if cfg.CredentialsFile != "" {
+		t.Fatalf("credentials = %q", cfg.CredentialsFile)
 	}
 }
 
@@ -120,7 +130,7 @@ func TestLoadInfersProjectFromSubscription(t *testing.T) {
 func TestLoadRejectsUnknownJSONField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"projectId":"demo-project","subscription":"events"}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"project_id":"demo-project","subscription":"events","endpoint":"pubsub.example:443"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Load([]string{"--config=" + path}, nil)
@@ -149,8 +159,8 @@ func TestLoadInvalidValues(t *testing.T) {
 		{name: "missing subscription", args: []string{"--project=demo-project"}, want: "subscription is required"},
 		{name: "bad universe", args: []string{"--project=demo-project", "--subscription=events", "--universe-domain=https://s3nsapis.fr"}, want: "bare host"},
 		{name: "bad format", args: []string{"--project=demo-project", "--subscription=events", "--format=yaml"}, want: "format"},
-		{name: "bad ack", env: []string{"PUBSUB_PROJECT_ID=demo-project", "PUBSUB_SUBSCRIPTION=events", "PUBSUB_ACK=maybe"}, want: "PUBSUB_ACK"},
-		{name: "endpoint path", args: []string{"--project=demo-project", "--subscription=events", "--endpoint=https://pubsub.s3nsapis.fr/v1"}, want: "path"},
+		{name: "bad ack", env: []string{"PROJECT_ID=demo-project", "PUBSUB_SUBSCRIPTION=events", "PUBSUB_ACK=maybe"}, want: "PUBSUB_ACK"},
+		{name: "removed flag", args: []string{"--project=demo-project", "--subscription=events", "--endpoint=pubsub.example:443"}, want: "flag provided but not defined: -endpoint"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,28 +178,12 @@ func TestHelpAndVersion(t *testing.T) {
 	if err == nil || !errorsAs(err, &help) || !strings.Contains(help.Usage, "pubsub-printer") {
 		t.Fatalf("help = %v", err)
 	}
+	if strings.Contains(help.Usage, "endpoint") || strings.Contains(help.Usage, "health") || strings.Contains(help.Usage, "emulator") || strings.Contains(help.Usage, "color") || strings.Contains(help.Usage, "quota") || strings.Contains(help.Usage, "goroutines") {
+		t.Fatalf("help still documents a removed setting:\n%s", help.Usage)
+	}
 	_, err = Load([]string{"--version"}, nil)
 	if err != ErrVersion {
 		t.Fatalf("version err = %v", err)
-	}
-}
-
-func TestNormalizeEndpoint(t *testing.T) {
-	cases := map[string]string{
-		"":                                "",
-		"pubsub.s3nsapis.fr":              "pubsub.s3nsapis.fr:443",
-		"pubsub.s3nsapis.fr:443":          "pubsub.s3nsapis.fr:443",
-		"https://pubsub.s3nsapis.fr":      "pubsub.s3nsapis.fr:443",
-		"https://pubsub.s3nsapis.fr:8443": "pubsub.s3nsapis.fr:8443",
-	}
-	for in, want := range cases {
-		got, err := NormalizeEndpoint(in)
-		if err != nil {
-			t.Fatalf("%q: %v", in, err)
-		}
-		if got != want {
-			t.Fatalf("%q: got %q want %q", in, got, want)
-		}
 	}
 }
 

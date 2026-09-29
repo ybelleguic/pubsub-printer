@@ -16,7 +16,6 @@ import (
 	"cloud.google.com/go/pubsub/v2"
 	"github.com/ybelleguic/pubsub-printer/internal/config"
 	"github.com/ybelleguic/pubsub-printer/internal/gcp"
-	"github.com/ybelleguic/pubsub-printer/internal/health"
 	"github.com/ybelleguic/pubsub-printer/internal/printer"
 )
 
@@ -38,7 +37,7 @@ func run(ctx context.Context, cfg config.Config, stdout io.Writer, logger *slog.
 	if err := publishRuntimeEnv(cfg); err != nil {
 		return err
 	}
-	if cfg.CredentialsFile != "" && cfg.EmulatorHost == "" {
+	if cfg.CredentialsFile != "" {
 		if _, err := os.Stat(cfg.CredentialsFile); err != nil {
 			return fmt.Errorf("credentials file: %w", err)
 		}
@@ -61,53 +60,10 @@ func run(ctx context.Context, cfg config.Config, stdout io.Writer, logger *slog.
 		"format", cfg.Format,
 	)
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var state health.State
-	var healthErr chan error
-	if cfg.HealthAddr != "" {
-		healthErr = make(chan error, 1)
-		srv := health.New(cfg.HealthAddr, &state)
-		go func() {
-			healthErr <- srv.Run(ctx)
-		}()
-		logger.Info("health server", "addr", cfg.HealthAddr)
-	}
-
-	recvErr := make(chan error, 1)
-	go func() {
-		recvErr <- receive(ctx, cfg, subName, stdout, logger, &state)
-	}()
-
-	select {
-	case err := <-recvErr:
-		cancel()
-		if healthErr != nil {
-			if herr := <-healthErr; herr != nil && err == nil {
-				err = herr
-			}
-		}
-		return err
-	case err := <-healthErr:
-		// A nil health error means the parent context was cancelled (SIGINT,
-		// SIGTERM, or Cloud Run shutdown). Wait for the pull loop and return
-		// its result so a graceful stop stays a zero exit.
-		cancel()
-		recv := <-recvErr
-		if err != nil {
-			return err
-		}
-		return recv
-	}
+	return receive(ctx, cfg, subName, stdout, logger)
 }
 
 func publishRuntimeEnv(cfg config.Config) error {
-	if cfg.EmulatorHost != "" {
-		// The v2 client skips its gRPC connection pool when this variable is set.
-		// The actual emulator dial options are still passed explicitly.
-		return os.Setenv("PUBSUB_EMULATOR_HOST", cfg.EmulatorHost)
-	}
 	if cfg.UniverseDomain != "" {
 		// Client libraries and Application Default Credentials both read this
 		// variable. It must agree with option.WithUniverseDomain, including on
@@ -118,16 +74,10 @@ func publishRuntimeEnv(cfg config.Config) error {
 	return nil
 }
 
-func receive(ctx context.Context, cfg config.Config, subName string, stdout io.Writer, logger *slog.Logger, state *health.State) error {
-	opts, err := gcp.ClientOptions(cfg)
+func receive(ctx context.Context, cfg config.Config, subName string, stdout io.Writer, logger *slog.Logger) error {
+	client, err := pubsub.NewClient(ctx, cfg.ProjectID, gcp.ClientOptions(cfg)...)
 	if err != nil {
-		return err
-	}
-	client, err := pubsub.NewClient(ctx, cfg.ProjectID, opts...)
-	if err != nil {
-		err = gcp.UniverseHint(err)
-		state.SetError(err)
-		return err
+		return gcp.UniverseHint(err)
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
@@ -138,11 +88,8 @@ func receive(ctx context.Context, cfg config.Config, subName string, stdout io.W
 	sub := client.Subscriber(cfg.Subscription)
 	sub.ReceiveSettings.MaxOutstandingMessages = cfg.MaxOutstandingMessages
 	sub.ReceiveSettings.MaxOutstandingBytes = cfg.MaxOutstandingBytes
-	sub.ReceiveSettings.NumGoroutines = cfg.NumGoroutines
 
-	out := printer.New(stdout, cfg.Format, cfg.Color, cfg.MaxBodyBytes)
-	state.SetReady(true)
-	defer state.SetReady(false)
+	out := printer.New(stdout, cfg.Format, cfg.MaxBodyBytes)
 
 	err = sub.Receive(ctx, func(cbCtx context.Context, msg *pubsub.Message) {
 		rec := printer.Record{
@@ -177,7 +124,6 @@ func receive(ctx context.Context, cfg config.Config, subName string, stdout io.W
 		msg.Ack()
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
-		state.SetError(err)
 		return fmt.Errorf("receive: %w", err)
 	}
 	return nil

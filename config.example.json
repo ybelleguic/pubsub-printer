@@ -4,10 +4,8 @@
   "universe_domain": "s3nsapis.fr",
   "ack": true,
   "format": "pretty",
-  "color": "auto",
   "max_outstanding_messages": 100,
   "max_outstanding_bytes": 67108864,
-  "num_goroutines": 4,
   "max_body_bytes": 262144,
   "exactly_once": false
 }

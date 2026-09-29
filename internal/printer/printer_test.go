@@ -13,7 +13,7 @@ import (
 func TestPrettyJSONPayloadAndMetadata(t *testing.T) {
 	attempt := 2
 	var buf bytes.Buffer
-	p := New(&buf, "pretty", "never", 0)
+	p := New(&buf, "pretty", 0)
 	published := time.Date(2026, 9, 29, 11, 49, 58, 0, time.UTC)
 	received := published.Add(2 * time.Second)
 	err := p.Print(Record{
@@ -63,7 +63,7 @@ func TestPrettyJSONPayloadAndMetadata(t *testing.T) {
 
 func TestPrettyBinaryTruncation(t *testing.T) {
 	var buf bytes.Buffer
-	p := New(&buf, "pretty", "never", 4)
+	p := New(&buf, "pretty", 4)
 	if err := p.Print(Record{ID: "bin", Data: []byte{0xff, 0xfe, 0xfd, 0xfc, 0xfb}}); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestPrettyBinaryTruncation(t *testing.T) {
 
 func TestJSONLine(t *testing.T) {
 	var buf bytes.Buffer
-	p := New(&buf, "json", "never", 0)
+	p := New(&buf, "json", 0)
 	attempt := 1
 	err := p.Print(Record{
 		Project:      "s3ns:demo",
@@ -121,7 +121,7 @@ func TestJSONLine(t *testing.T) {
 
 func TestConcurrentPrintsDoNotInterleave(t *testing.T) {
 	var buf bytes.Buffer
-	p := New(&buf, "json", "never", 0)
+	p := New(&buf, "json", 0)
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
@@ -146,7 +146,7 @@ func TestConcurrentPrintsDoNotInterleave(t *testing.T) {
 
 func TestJSONTextAndEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	p := New(&buf, "json", "never", 0)
+	p := New(&buf, "json", 0)
 	if err := p.Print(Record{ID: "t", Data: []byte("hello")}); err != nil {
 		t.Fatal(err)
 	}
