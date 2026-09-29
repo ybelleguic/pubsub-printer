@@ -1,0 +1,94 @@
+# GKE + Workload Identity.
+#
+# 1. Create a Google service account and grant roles/pubsub.subscriber on the
+#    subscription.
+# 2. Let the Kubernetes service account impersonate it. Use the project that
+#    owns the cluster (on S3NS, keep the s3ns: prefix if that is how the
+#    project is identified):
+#
+#    gcloud iam service-accounts add-iam-policy-binding \
+#      pubsub-printer@PROJECT_ID.iam.gserviceaccount.com \
+#      --role=roles/iam.workloadIdentityUser \
+#      --member="serviceAccount:PROJECT_ID.svc.id.goog[NAMESPACE/pubsub-printer]"
+#
+# 3. The cluster must have Workload Identity enabled. Do not set
+#    GOOGLE_APPLICATION_CREDENTIALS: Application Default Credentials then use
+#    the metadata server.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pubsub-printer
+  namespace: NAMESPACE
+  annotations:
+    iam.gke.io/gcp-service-account: pubsub-printer@PROJECT_ID.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pubsub-printer
+  namespace: NAMESPACE
+  labels:
+    app: pubsub-printer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pubsub-printer
+  template:
+    metadata:
+      labels:
+        app: pubsub-printer
+    spec:
+      serviceAccountName: pubsub-printer
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pubsub-printer
+          image: REGION-docker.pkg.dev/PROJECT_ID/REPO/pubsub-printer:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --project=s3ns:my-project
+            - --subscription=events
+            - --universe-domain=s3nsapis.fr
+          env:
+            # The client libraries read this themselves. The flag above also
+            # exports it before the client is created so auth and the API host agree.
+            - name: GOOGLE_CLOUD_UNIVERSE_DOMAIN
+              value: s3nsapis.fr
+            - name: HEALTH_ADDR
+              value: ":8080"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
